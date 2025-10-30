@@ -203,13 +203,7 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
 
 
 async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
-    url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
-
-    point_properties = None
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=polygon.model_dump())
-        response.raise_for_status()
-        point_properties = response.json()
+    point_properties = await get_point_from_service(geojson_name, polygon)
 
     simulation_result = await run_simulation(polygon, point_properties)
     simulation_result = simulation_result.to_dict()
@@ -260,3 +254,11 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
         geojson_return["features"].append(feature)
 
     return geojson_return
+
+async def get_point_from_service(geojson_name, polygon):
+    url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=polygon.model_dump())
+        response.raise_for_status()
+        return response.json()
