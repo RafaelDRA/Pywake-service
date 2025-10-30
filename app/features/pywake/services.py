@@ -1,3 +1,4 @@
+import httpx
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -17,13 +18,14 @@ from py_wake.deficit_models import BastankhahGaussianDeficit
 from py_wake.superposition_models import LinearSum
 from py_wake.deficit_models import SelfSimilarityDeficit2020
 
+from app.core.settings import settings
 from app.features.pywake.schemas import GeoJSONQuery
 
 # ==========================================================
 # FUNÇÕES DE CONFIGURAÇÃO
 # ==========================================================
 
-def load_turbine_data(csv_path):
+async def load_turbine_data(csv_path):
     """Carrega os dados da turbina de um arquivo CSV."""
     try:
         df = pd.read_csv(csv_path)
@@ -40,7 +42,7 @@ def load_turbine_data(csv_path):
         print(f"Erro: Arquivo CSV da turbina não encontrado em '{csv_path}'")
         return None
 
-def setup_simulation_models(freq, c, k, ti, wd, wt):
+async def setup_simulation_models(freq, c, k, ti, wd, wt):
     """Configura o Site e o Modelo de Simulação do PyWake."""
     ds = xr.Dataset(
         data_vars={
@@ -67,7 +69,7 @@ def setup_simulation_models(freq, c, k, ti, wd, wt):
 # FUNÇÕES DE GEOMETRIA E LAYOUT
 # ==========================================================
 
-def load_and_project_boundary(geojson: GeoJSONQuery, source_crs="epsg:4326", target_crs="epsg:32724"):
+async def load_and_project_boundary(geojson: GeoJSONQuery, source_crs="epsg:4326", target_crs="epsg:32724"):
     """
     Carrega um GeoJSON, extrai coordenadas e as projeta de Lon/Lat para UTM (metros).
     """
@@ -86,14 +88,14 @@ def load_and_project_boundary(geojson: GeoJSONQuery, source_crs="epsg:4326", tar
     print(f"Área GeoJSON de {len(pontos_usuario)} pontos carregada e projetada para UTM.")
     return boundary_polygon, boundary_path
 
-def get_rotation_angle(wind_direction_met):
+async def get_rotation_angle(wind_direction_met):
     """Converte o ângulo do vento (Meteorológico) para o ângulo de rotação (Cartesiano)."""
     angle_deg_cart = (270 - wind_direction_met) % 360
     angle_rad_cart = np.deg2rad(angle_deg_cart)
     print(f"Direção do vento (MET): {wind_direction_met}°, Ângulo de rotação (CART): {angle_deg_cart:.1f}°")
     return angle_rad_cart
 
-def get_upwind_anchor(boundary_polygon, angle_rad_cart):
+async def get_upwind_anchor(boundary_polygon, angle_rad_cart):
     """Encontra o vértice 'upwind' (oposto ao vento/fluxo) da geometria."""
     v_flow = np.array([np.cos(angle_rad_cart), np.sin(angle_rad_cart)])
     dot_products = np.dot(boundary_polygon, v_flow)
@@ -101,7 +103,7 @@ def get_upwind_anchor(boundary_polygon, angle_rad_cart):
     print(f"Ancorando a grade no vértice 'upwind': ({anchor_vertex[0]:.0f}, {anchor_vertex[1]:.0f})")
     return anchor_vertex
 
-def generate_candidate_grid(boundary_polygon, anchor_vertex, angle_rad_cart, spacing_downwind, spacing_crosswind, stagger_offset):
+async def generate_candidate_grid(boundary_polygon, anchor_vertex, angle_rad_cart, spacing_downwind, spacing_crosswind, stagger_offset):
     """
     Gera uma grade de pontos candidatos, aplicando 'stagger', rotação e ancoragem.
     """
@@ -139,7 +141,7 @@ def generate_candidate_grid(boundary_polygon, anchor_vertex, angle_rad_cart, spa
     
     return np.vstack([x_candidatos, y_candidatos]).T
 
-def filter_grid_by_boundary(pontos_candidatos, boundary_path):
+async def filter_grid_by_boundary(pontos_candidatos, boundary_path):
     """Filtra os pontos candidatos, mantendo apenas os que estão dentro da geometria."""
     mascara = boundary_path.contains_points(pontos_candidatos)
     pontos_finais = pontos_candidatos[mascara]
@@ -152,27 +154,27 @@ def filter_grid_by_boundary(pontos_candidatos, boundary_path):
 # FUNÇÕES DE SIMULAÇÃO E PLOTAGEM
 # ==========================================================
 
-def run_simulation(polygon: GeoJSONQuery, wind_speed=10):
+async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed=10):
   # --- 1. Configurações Iniciais ---
   
   # Carregar dados da turbina
-  wt = load_turbine_data("./data/IEA_Reference_15MW_240.csv") # Substitua pelo nome do arquivo correto
+  wt = await load_turbine_data("./data/IEA_Reference_15MW_240.csv") # Substitua pelo nome do arquivo correto
   if wt is None:
       return # Para a execução se o arquivo não for encontrado
 
   # Dados do site (do script original)
-  freq = [0.036, 0.039, 0.052, 0.07, 0.084, 0.064, 0.086, 0.118, 0.152, 0.147, 0.1, 0.052]
-  c = [9.177, 9.782, 9.532, 9.91, 10.043, 9.594, 9.584, 10.515, 11.399, 11.687, 11.637, 10.088]
-  k = [2.393, 2.447, 2.412, 2.592, 2.756, 2.596, 2.584, 2.549, 2.471, 2.607, 2.627, 2.326]
+  freq = np.array(point_properties.get("dp", [])) / 1000
+  c = point_properties.get("c_s")
+  k = point_properties.get("k_s")
   wd = np.linspace(0, 360, len(freq), endpoint=False)
   ti = [.1] * 12
   
   # --- 2. Setup dos Modelos PyWake ---
-  site, wf_model = setup_simulation_models(freq, c, k, ti, wd, wt)
+  site, wf_model = await setup_simulation_models(freq, c, k, ti, wd, wt)
   
   # --- 3. Processamento da Geometria ---
   
-  boundary_polygon, boundary_path = load_and_project_boundary(polygon)
+  boundary_polygon, boundary_path = await load_and_project_boundary(polygon)
 
   # --- 4. Geração do Layout ---
   rotor_diameter = wt.diameter()
@@ -184,24 +186,32 @@ def run_simulation(polygon: GeoJSONQuery, wind_speed=10):
   wind_direction_met = wd[np.argmax(freq)] # Para usar o predominante automático
   
   # Gera os pontos candidatos
-  angle_rad_cart = get_rotation_angle(wind_direction_met)
-  anchor_vertex = get_upwind_anchor(boundary_polygon, angle_rad_cart)
+  angle_rad_cart = await get_rotation_angle(wind_direction_met)
+  anchor_vertex = await get_upwind_anchor(boundary_polygon, angle_rad_cart)
   
-  pontos_candidatos = generate_candidate_grid(
+  pontos_candidatos = await generate_candidate_grid(
       boundary_polygon, anchor_vertex, angle_rad_cart,
       spacing_downwind, spacing_crosswind, stagger_offset
   )
   
   # Filtra os pontos
-  x_layout, y_layout = filter_grid_by_boundary(pontos_candidatos, boundary_path)
+  x_layout, y_layout = await filter_grid_by_boundary(pontos_candidatos, boundary_path)
 
   """Roda a simulação do PyWake se houver turbinas."""
   simulacaoResult = wf_model(x_layout, y_layout, wd=wind_direction_met, ws=wind_speed)
   return simulacaoResult
 
 
-def generate_geojson(polygon: GeoJSONQuery):
-    simulation_result = run_simulation(polygon)
+async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
+    url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
+
+    point_properties = None
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=polygon.model_dump())
+        response.raise_for_status()
+        point_properties = response.json()
+
+    simulation_result = await run_simulation(polygon, point_properties)
     simulation_result = simulation_result.to_dict()
 
     transformer = Transformer.from_crs("EPSG:32724", "EPSG:4674", always_xy=True)

@@ -7,5 +7,5 @@ router = APIRouter(prefix="/pywake", tags=["GeoJSONs"])
 
 @router.post("/wind-farm/{geojson_name}")
 async def wind_farm(geojson_name: str,polygon: schemas.GeoJSONQuery):
-  simulation_result = generate_geojson(polygon)
+  simulation_result = await generate_geojson(geojson_name, polygon)
   return simulation_result
