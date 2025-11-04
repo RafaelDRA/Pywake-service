@@ -237,7 +237,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "type": "Feature",
             "properties": {
                 "wt": i + 1,
-                "Aerogerador": "Modelo Catatau 15MW",
+                "Aerogerador": "IEA_Reference_15MW_240",
                 "Pot": 15.0,
                 "WS_eff": float(data_vars["WS_eff"]["data"][i][0][0]),
                 "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
