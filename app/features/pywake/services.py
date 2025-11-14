@@ -11,12 +11,8 @@ from py_wake.site.shear import PowerShear
 from py_wake.wind_turbines import WindTurbine
 from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
 from py_wake.wind_farm_models import All2AllIterative
-from py_wake.superposition_models import MaxSum
 from py_wake.deficit_models import FugaDeficit
-from py_wake.flow_map import XYGrid
-from py_wake.deficit_models import BastankhahGaussianDeficit
 from py_wake.superposition_models import LinearSum
-from py_wake.deficit_models import SelfSimilarityDeficit2020
 
 from app.core.settings import settings
 from app.features.pywake.schemas import GeoJSONQuery
@@ -59,9 +55,9 @@ async def setup_simulation_models(freq, c, k, ti, wd, wt):
     wf_model = All2AllIterative(
         site,
         wt,
-        wake_deficitModel=BastankhahGaussianDeficit(use_effective_ws=True),
+        wake_deficitModel=FugaDeficit(),
         superpositionModel=LinearSum(),
-        blockage_deficitModel=SelfSimilarityDeficit2020()
+        blockage_deficitModel=FugaDeficit()
     )
     return site, wf_model
 
@@ -154,7 +150,7 @@ async def filter_grid_by_boundary(pontos_candidatos, boundary_path):
 # FUNÇÕES DE SIMULAÇÃO E PLOTAGEM
 # ==========================================================
 
-async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed=10):
+async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed=10, all_data=False):
   # --- 1. Configurações Iniciais ---
   
   # Carregar dados da turbina
@@ -184,7 +180,7 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
   
   # Define a direção do vento (METEOROLÓGICO)
   wind_direction_met = wd[np.argmax(freq)] # Para usar o predominante automático
-  
+
   # Gera os pontos candidatos
   angle_rad_cart = await get_rotation_angle(wind_direction_met)
   anchor_vertex = await get_upwind_anchor(boundary_polygon, angle_rad_cart)
@@ -193,25 +189,27 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
       boundary_polygon, anchor_vertex, angle_rad_cart,
       spacing_downwind, spacing_crosswind, stagger_offset
   )
-  
   # Filtra os pontos
   x_layout, y_layout = await filter_grid_by_boundary(pontos_candidatos, boundary_path)
 
   """Roda a simulação do PyWake se houver turbinas."""
-  simulacaoResult = wf_model(x_layout, y_layout, wd=wind_direction_met, ws=wind_speed)
+  if all_data:
+    simulacaoResult = wf_model(x_layout, y_layout, wd=wd, ws=range(3,26))
+  else:
+    simulacaoResult = wf_model(x_layout, y_layout, wd=wind_direction_met, ws=wind_speed)
+
   return simulacaoResult
 
 
 async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
     point_properties = await get_point_from_service(geojson_name, polygon)
-
-    simulation_result = await run_simulation(polygon, point_properties)
-    simulation_result = simulation_result.to_dict()
-
+    simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties)
+ 
+    simulation_result_one_d = simulation_result_one_d.to_dict()
     transformer = Transformer.from_crs("EPSG:32724", "EPSG:4674", always_xy=True)
 
-    data_vars = simulation_result.get("data_vars", None)
-    data_coords = simulation_result.get("coords", None)
+    data_vars = simulation_result_one_d.get("data_vars", None)
+    data_coords = simulation_result_one_d.get("coords", None)
 
     if not data_vars or not data_coords:
         return None
@@ -237,7 +235,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "type": "Feature",
             "properties": {
                 "wt": i + 1,
-                "Aerogerador": "Modelo Catatau 15MW",
+                "Aerogerador": "IEA_Reference_15MW_240",
                 "Pot": 15.0,
                 "WS_eff": float(data_vars["WS_eff"]["data"][i][0][0]),
                 "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
@@ -255,6 +253,41 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
     return geojson_return
 
+async def all_data_area(geojson_name: str, polygon: GeoJSONQuery):
+  point_properties = await get_point_from_service(geojson_name, polygon)
+  simulation_result_all_d = await run_simulation(polygon=polygon, point_properties=point_properties, all_data=True)
+  
+  aep = simulation_result_all_d.aep()
+  print(aep.name)
+  aep_por_wt_ws = aep.sum(['wt', 'ws'])  # AEP vs Wind Direction
+  aep_por_wt_wd = aep.sum(['wt','wd'])   # AEP vs Wind Speed
+
+  aep_vs_ws_gwh = aep_por_wt_wd.values.tolist()
+
+  # AEP por Direção do Vento (Eixo Y do Plot 3)
+  # Pega o array NumPy dos valores e converte para lista
+  aep_vs_wd_gwh = aep_por_wt_ws.values.tolist()
+
+  # --- Extração dos Eixos X (Opcional, para contexto) ---
+  wind_speed_x = aep_por_wt_wd.ws.values.tolist()
+  wind_direction_x = aep_por_wt_ws.wd.values.tolist()
+
+  # --- Objeto Final de Retorno (Valores de AEP e seus contextos) ---
+
+  dados_aep_gwh = {
+      # AEP vs Velocidade do Vento
+      "wind_speed_x": wind_speed_x,
+      "aep_vs_ws_y": aep_vs_ws_gwh,
+      
+      # AEP vs Direção do Vento
+      "wind_direction_x": wind_direction_x,
+      "aep_vs_wd_y": aep_vs_wd_gwh
+  }
+
+  print(dados_aep_gwh)
+  return dados_aep_gwh
+
+
 async def get_point_from_service(geojson_name, polygon):
     url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
 
@@ -262,3 +295,5 @@ async def get_point_from_service(geojson_name, polygon):
         response = await client.post(url, json=polygon.model_dump())
         response.raise_for_status()
         return response.json()
+    
+    
