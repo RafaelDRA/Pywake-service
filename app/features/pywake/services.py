@@ -32,7 +32,6 @@ async def load_turbine_data(csv_path):
                         diameter=240,
                         hub_height=150,
                         powerCtFunction=PowerCtTabular(ws, power, 'kW', ct))
-        print(f"Turbina '{wt.name}' carregada com diâmetro de {wt.diameter()}m.")
         return wt
     except FileNotFoundError:
         print(f"Erro: Arquivo CSV da turbina não encontrado em '{csv_path}'")
@@ -81,7 +80,6 @@ async def load_and_project_boundary(geojson: GeoJSONQuery, source_crs="epsg:4326
     boundary_polygon = np.array(pontos_usuario)
     boundary_path = Path(boundary_polygon)
     
-    print(f"Área GeoJSON de {len(pontos_usuario)} pontos carregada e projetada para UTM.")
     return boundary_polygon, boundary_path
 
 async def get_rotation_angle(wind_direction_met):
@@ -150,7 +148,7 @@ async def filter_grid_by_boundary(pontos_candidatos, boundary_path):
 # FUNÇÕES DE SIMULAÇÃO E PLOTAGEM
 # ==========================================================
 
-async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed=10, all_data=False):
+async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed: float, all_data=False):
   # --- 1. Configurações Iniciais ---
   
   # Carregar dados da turbina
@@ -202,8 +200,15 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
 
 
 async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
+    print(polygon)
     point_properties = await get_point_from_service(geojson_name, polygon)
-    simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties)
+    print(point_properties)
+
+    # Run simulation for all conditions (AEP)
+    simulation_result_all = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
+    farm_aep = simulation_result_all.aep().sum().item()
+
+    simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10))
  
     simulation_result_one_d = simulation_result_one_d.to_dict()
     transformer = Transformer.from_crs("EPSG:32724", "EPSG:4674", always_xy=True)
@@ -226,7 +231,8 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "Weibull_A": data_vars["Weibull_A"]["data"],
             "Weibull_k": data_vars["Weibull_k"]["data"],
             "WS": data_vars["WS"]["data"],
-            "WD": data_vars["WD"]["data"]
+            "WD": data_vars["WD"]["data"],
+            "Farm_AEP_GWh": farm_aep
         }
     }
 
@@ -255,7 +261,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
 async def all_data_area(geojson_name: str, polygon: GeoJSONQuery):
   point_properties = await get_point_from_service(geojson_name, polygon)
-  simulation_result_all_d = await run_simulation(polygon=polygon, point_properties=point_properties, all_data=True)
+  simulation_result_all_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
   
   aep = simulation_result_all_d.aep()
   print(aep.name)
