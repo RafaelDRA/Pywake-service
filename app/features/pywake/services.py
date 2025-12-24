@@ -13,6 +13,7 @@ from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
 from py_wake.wind_farm_models import All2AllIterative
 from py_wake.deficit_models import FugaDeficit
 from py_wake.superposition_models import LinearSum
+from fastapi import HTTPException, status
 
 from app.core.settings import settings
 from app.features.pywake.schemas import GeoJSONQuery
@@ -86,7 +87,6 @@ async def get_rotation_angle(wind_direction_met):
     """Converte o ângulo do vento (Meteorológico) para o ângulo de rotação (Cartesiano)."""
     angle_deg_cart = (270 - wind_direction_met) % 360
     angle_rad_cart = np.deg2rad(angle_deg_cart)
-    print(f"Direção do vento (MET): {wind_direction_met}°, Ângulo de rotação (CART): {angle_deg_cart:.1f}°")
     return angle_rad_cart
 
 async def get_upwind_anchor(boundary_polygon, angle_rad_cart):
@@ -94,7 +94,6 @@ async def get_upwind_anchor(boundary_polygon, angle_rad_cart):
     v_flow = np.array([np.cos(angle_rad_cart), np.sin(angle_rad_cart)])
     dot_products = np.dot(boundary_polygon, v_flow)
     anchor_vertex = boundary_polygon[np.argmin(dot_products)]
-    print(f"Ancorando a grade no vértice 'upwind': ({anchor_vertex[0]:.0f}, {anchor_vertex[1]:.0f})")
     return anchor_vertex
 
 async def generate_candidate_grid(boundary_polygon, anchor_vertex, angle_rad_cart, spacing_downwind, spacing_crosswind, stagger_offset):
@@ -141,7 +140,6 @@ async def filter_grid_by_boundary(pontos_candidatos, boundary_path):
     pontos_finais = pontos_candidatos[mascara]
     x_layout = pontos_finais[:, 0]
     y_layout = pontos_finais[:, 1]
-    print(f"Layout gerado com {len(x_layout)} turbinas.")
     return x_layout, y_layout
 
 # ==========================================================
@@ -200,106 +198,161 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
 
 
 async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
-    print(polygon)
-    point_properties = await get_point_from_service(geojson_name, polygon)
-    print(point_properties)
+    try:
+        point_properties = await get_point_from_service(geojson_name, polygon)
 
-    # Run simulation for all conditions (AEP)
-    simulation_result_all = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
-    farm_aep = simulation_result_all.aep().sum().item()
+        if not point_properties:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail=f"Could not retrieve point properties for {geojson_name}"
+            )
 
-    simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10))
- 
-    simulation_result_one_d = simulation_result_one_d.to_dict()
-    transformer = Transformer.from_crs("EPSG:32724", "EPSG:4674", always_xy=True)
+        # Run simulation for all conditions (AEP)
+        simulation_result_all = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
+        
+        if simulation_result_all is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="Simulation failed. Check turbine data or geometry."
+            )
 
-    data_vars = simulation_result_one_d.get("data_vars", None)
-    data_coords = simulation_result_one_d.get("coords", None)
+        farm_aep = simulation_result_all.aep().sum().item()
 
-    if not data_vars or not data_coords:
-        return None
+        simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10))
+    
+        if simulation_result_one_d is None:
+             raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="Simulation failed for single condition."
+            )
 
-    xs = data_vars["x"]["data"]
-    ys = data_vars["y"]["data"]
+        simulation_result_one_d = simulation_result_one_d.to_dict()
+        transformer = Transformer.from_crs("EPSG:32724", "EPSG:4674", always_xy=True)
 
-    lons, lats = transformer.transform(xs, ys)
+        data_vars = simulation_result_one_d.get("data_vars", None)
+        data_coords = simulation_result_one_d.get("coords", None)
 
-    geojson_return = {
-        "type": "FeatureCollection",
-        "features": [],
-        "properties": {
-            "Weibull_A": data_vars["Weibull_A"]["data"],
-            "Weibull_k": data_vars["Weibull_k"]["data"],
-            "WS": data_vars["WS"]["data"],
-            "WD": data_vars["WD"]["data"],
-            "Farm_AEP_GWh": farm_aep
-        }
-    }
+        if not data_vars or not data_coords:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="Simulation result is empty or invalid."
+            )
 
-    for i in range(len(xs)):
-        feature = {
-            "type": "Feature",
+        xs = data_vars["x"]["data"]
+        ys = data_vars["y"]["data"]
+
+        lons, lats = transformer.transform(xs, ys)
+
+        geojson_return = {
+            "type": "FeatureCollection",
+            "features": [],
             "properties": {
-                "wt": i + 1,
-                "Aerogerador": "IEA_Reference_15MW_240",
-                "Pot": 15.0,
-                "WS_eff": float(data_vars["WS_eff"]["data"][i][0][0]),
-                "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
-                "Power": float(data_vars["Power"]["data"][i][0][0]),
-                "CT": float(data_vars["CT"]["data"][i][0][0]),
-                "h": float(data_vars["h"]["data"][i])
-            },
-            "geometry": {
-                "type": "Point",
-                "coordinates": [lons[i], lats[i]]
+                "Weibull_A": data_vars["Weibull_A"]["data"],
+                "Weibull_k": data_vars["Weibull_k"]["data"],
+                "WS": data_vars["WS"]["data"],
+                "WD": data_vars["WD"]["data"],
+                "Farm_AEP_GWh": farm_aep
             }
         }
 
-        geojson_return["features"].append(feature)
+        for i in range(len(xs)):
+            feature = {
+                "type": "Feature",
+                "properties": {
+                    "wt": i + 1,
+                    "Aerogerador": "IEA_Reference_15MW_240",
+                    "Pot": 15.0,
+                    "WS_eff": float(data_vars["WS_eff"]["data"][i][0][0]),
+                    "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
+                    "Power": float(data_vars["Power"]["data"][i][0][0]),
+                    "CT": float(data_vars["CT"]["data"][i][0][0]),
+                    "h": float(data_vars["h"]["data"][i])
+                },
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [lons[i], lats[i]]
+                }
+            }
 
-    return geojson_return
+            geojson_return["features"].append(feature)
+
+        return geojson_return
+
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"External service error: {e.response.text}")
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Unexpected error in generate_geojson: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 async def all_data_area(geojson_name: str, polygon: GeoJSONQuery):
-  point_properties = await get_point_from_service(geojson_name, polygon)
-  simulation_result_all_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
-  
-  aep = simulation_result_all_d.aep()
-  print(aep.name)
-  aep_por_wt_ws = aep.sum(['wt', 'ws'])  # AEP vs Wind Direction
-  aep_por_wt_wd = aep.sum(['wt','wd'])   # AEP vs Wind Speed
+  try:
+      point_properties = await get_point_from_service(geojson_name, polygon)
 
-  aep_vs_ws_gwh = aep_por_wt_wd.values.tolist()
+      if not point_properties:
+          raise HTTPException(
+              status_code=status.HTTP_404_NOT_FOUND, 
+              detail=f"Could not retrieve point properties for {geojson_name}"
+          )
 
-  # AEP por Direção do Vento (Eixo Y do Plot 3)
-  # Pega o array NumPy dos valores e converte para lista
-  aep_vs_wd_gwh = aep_por_wt_ws.values.tolist()
-
-  # --- Extração dos Eixos X (Opcional, para contexto) ---
-  wind_speed_x = aep_por_wt_wd.ws.values.tolist()
-  wind_direction_x = aep_por_wt_ws.wd.values.tolist()
-
-  # --- Objeto Final de Retorno (Valores de AEP e seus contextos) ---
-
-  dados_aep_gwh = {
-      # AEP vs Velocidade do Vento
-      "wind_speed_x": wind_speed_x,
-      "aep_vs_ws_y": aep_vs_ws_gwh,
+      simulation_result_all_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
       
-      # AEP vs Direção do Vento
-      "wind_direction_x": wind_direction_x,
-      "aep_vs_wd_y": aep_vs_wd_gwh
-  }
+      if simulation_result_all_d is None:
+             raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="Simulation failed. Check turbine data or geometry."
+            )
 
-  print(dados_aep_gwh)
-  return dados_aep_gwh
+      aep = simulation_result_all_d.aep()
+      aep_por_wt_ws = aep.sum(['wt', 'ws'])  # AEP vs Wind Direction
+      aep_por_wt_wd = aep.sum(['wt','wd'])   # AEP vs Wind Speed
+
+      aep_vs_ws_gwh = aep_por_wt_wd.values.tolist()
+
+      # AEP por Direção do Vento (Eixo Y do Plot 3)
+      # Pega o array NumPy dos valores e converte para lista
+      aep_vs_wd_gwh = aep_por_wt_ws.values.tolist()
+
+      # --- Extração dos Eixos X (Opcional, para contexto) ---
+      wind_speed_x = aep_por_wt_wd.ws.values.tolist()
+      wind_direction_x = aep_por_wt_ws.wd.values.tolist()
+
+      # --- Objeto Final de Retorno (Valores de AEP e seus contextos) ---
+
+      dados_aep_gwh = {
+          # AEP vs Velocidade do Vento
+          "wind_speed_x": wind_speed_x,
+          "aep_vs_ws_y": aep_vs_ws_gwh,
+          
+          # AEP vs Direção do Vento
+          "wind_direction_x": wind_direction_x,
+          "aep_vs_wd_y": aep_vs_wd_gwh
+      }
+
+      return dados_aep_gwh
+
+  except httpx.HTTPStatusError as e:
+      raise HTTPException(status_code=e.response.status_code, detail=f"External service error: {e.response.text}")
+  except HTTPException as e:
+      raise e
+  except Exception as e:
+      print(f"Unexpected error in all_data_area: {e}")
+      raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 async def get_point_from_service(geojson_name, polygon):
     url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=polygon.model_dump())
-        response.raise_for_status()
-        return response.json()
-    
-    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=polygon.model_dump())
+            response.raise_for_status()
+            return response.json()
+    except httpx.RequestError as exc:
+        print(f"An error occurred while requesting {exc.request.url!r}.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Service unavailable: {exc}")
+    except httpx.HTTPStatusError as exc:
+        print(f"Error response {exc.response.status_code} while requesting {exc.request.url!r}.")
+        raise exc
+
