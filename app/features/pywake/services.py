@@ -13,6 +13,7 @@ from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
 from py_wake.wind_farm_models import All2AllIterative
 from py_wake.deficit_models import FugaDeficit
 from py_wake.superposition_models import LinearSum
+from shapely.geometry import Polygon
 from fastapi import HTTPException, status
 
 from app.core.settings import settings
@@ -168,6 +169,9 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
   
   boundary_polygon, boundary_path = await load_and_project_boundary(polygon)
 
+  if Polygon(boundary_polygon).area < 2000000:
+      raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulation area is too small. Please select a larger area.")
+
   # --- 4. Geração do Layout ---
   rotor_diameter = wt.diameter()
   spacing_downwind = 15 * rotor_diameter
@@ -187,6 +191,9 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
   )
   # Filtra os pontos
   x_layout, y_layout = await filter_grid_by_boundary(pontos_candidatos, boundary_path)
+
+  if len(x_layout) == 0:
+      raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No turbines could be placed in the selected area. Please select a larger or different area.")
 
   """Roda a simulação do PyWake se houver turbinas."""
   if all_data:
