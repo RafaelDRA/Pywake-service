@@ -273,7 +273,8 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
                     "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
                     "Power": float(data_vars["Power"]["data"][i][0][0]),
                     "CT": float(data_vars["CT"]["data"][i][0][0]),
-                    "h": float(data_vars["h"]["data"][i])
+                    "h": float(data_vars["h"]["data"][i]),
+                    "type": "WTG"
                 },
                 "geometry": {
                     "type": "Point",
@@ -282,6 +283,14 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             }
 
             geojson_return["features"].append(feature)
+
+        geojson_return["features"].append({
+            "type": "Feature",
+            "properties": {
+                "type": "Boundary"
+            },
+            "geometry": polygon.geometry
+        })
 
         return geojson_return
 
