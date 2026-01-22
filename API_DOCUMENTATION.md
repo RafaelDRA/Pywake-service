@@ -63,7 +63,8 @@ Generates wind turbine layout and calculates power output for a single wind cond
     "Weibull_k": [number array],     // Weibull shape parameters for all sectors
     "WS": [number array],            // Wind speeds evaluated
     "WD": [number array],            // Wind directions evaluated
-    "Farm_AEP_GWh": number           // Total Annual Energy Production in GWh
+    "Farm_AEP_GWh": number,          // Total Annual Energy Production in GWh
+    "Farm_Area_km2": number          // Total area of the wind farm in km²
   },
   "features": [
     {
@@ -93,6 +94,7 @@ Generates wind turbine layout and calculates power output for a single wind cond
 - Each feature represents one wind turbine
 - Coordinates returned in **SIRGAS 2000 (EPSG:4674)**
 - `Farm_AEP_GWh`: Total farm Annual Energy Production in GigaWatt-hours
+- `Farm_Area_km2`: Total calculated area of the valid polygon in square kilometers
 - Turbine positions optimized with:
   - Downwind spacing: 15D (15 × rotor diameter)
   - Crosswind spacing: 3D (3 × rotor diameter)

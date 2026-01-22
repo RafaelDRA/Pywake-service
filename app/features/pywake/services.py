@@ -250,6 +250,10 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
         lons, lats = transformer.transform(xs, ys)
 
+        boundary_polygon, _ = await load_and_project_boundary(polygon)
+        area_m2 = Polygon(boundary_polygon).area
+        area_km2 = area_m2 / 1e6
+
         geojson_return = {
             "type": "FeatureCollection",
             "features": [],
@@ -258,9 +262,13 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
                 "Weibull_k": data_vars["Weibull_k"]["data"],
                 "WS": data_vars["WS"]["data"],
                 "WD": data_vars["WD"]["data"],
-                "Farm_AEP_GWh": farm_aep
+                "Farm_AEP_GWh": farm_aep,
+                "Farm_Area_km2": area_km2,
+                "LAYER_NAME": polygon.properties.get("LAYER_NAME", "N/A") if polygon.properties else polygon.properties.get("Empreendimento", "N/A")
             }
         }
+        print(polygon)
+        print(polygon.properties)
 
         for i in range(len(xs)):
             feature = {
@@ -287,7 +295,8 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
         geojson_return["features"].append({
             "type": "Feature",
             "properties": {
-                "type": "Boundary"
+                "type": "Boundary",
+                "Farm_Area_km2": area_km2
             },
             "geometry": polygon.geometry
         })
