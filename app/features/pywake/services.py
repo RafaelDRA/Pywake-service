@@ -3,6 +3,8 @@ import xarray as xr
 import numpy as np
 import pandas as pd
 import json
+import base64
+import binascii
 import matplotlib.pyplot as plt
 from matplotlib.path import Path
 from pyproj import Transformer
@@ -15,6 +17,9 @@ from py_wake.deficit_models import FugaDeficit
 from py_wake.superposition_models import LinearSum
 from shapely.geometry import Polygon
 from fastapi import HTTPException, status
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
 
 from app.core.settings import settings
 from app.features.pywake.schemas import GeoJSONQuery
@@ -258,13 +263,15 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "type": "FeatureCollection",
             "features": [],
             "properties": {
-                "Weibull_A": data_vars["Weibull_A"]["data"],
-                "Weibull_k": data_vars["Weibull_k"]["data"],
-                "WS": data_vars["WS"]["data"],
-                "WD": data_vars["WD"]["data"],
-                "Farm_AEP_GWh": farm_aep,
-                "Farm_Area_km2": area_km2,
-                "LAYER_NAME": polygon.properties.get("LAYER_NAME", "N/A") if polygon.properties else polygon.properties.get("Empreendimento", "N/A")
+                "LAYER_NAME": polygon.properties.get("LAYER_NAME", "N/A") if polygon.properties else polygon.properties.get("Empreendimento", "N/A"),
+                "stats": {
+                    "Weibull_A": data_vars["Weibull_A"]["data"],
+                    "Weibull_k": data_vars["Weibull_k"]["data"],
+                    "WS": data_vars["WS"]["data"],
+                    "WD": data_vars["WD"]["data"],
+                    "Farm_AEP_GWh": farm_aep,
+                    "Farm_Area_km2": area_km2
+                },
             }
         }
         print(polygon)
@@ -373,7 +380,32 @@ async def get_point_from_service(geojson_name, polygon):
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=polygon.model_dump())
             response.raise_for_status()
-            return response.json()
+            
+            data = response.json()
+            
+            # Decrypt response if encrypted
+            if isinstance(data, dict) and "encrypted_data" in data:
+                try:
+                    encrypted_content = data["encrypted_data"]
+                    key = binascii.unhexlify(settings.ENCRYPTION_KEY_HEX)
+                    decoded_data = base64.b64decode(encrypted_content)
+                    
+                    iv = decoded_data[:16]
+                    ciphertext = decoded_data[16:]
+                    
+                    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+                    decryptor = cipher.decryptor()
+                    padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+                    
+                    unpadder = padding.PKCS7(128).unpadder()
+                    plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+                    
+                    return json.loads(plaintext.decode('utf-8'))
+                except Exception as e:
+                    print(f"Decryption error: {e}")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error decrypting service response")
+            
+            return data
     except httpx.RequestError as exc:
         print(f"An error occurred while requesting {exc.request.url!r}.")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Service unavailable: {exc}")
