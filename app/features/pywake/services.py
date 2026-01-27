@@ -259,6 +259,8 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
         area_m2 = Polygon(boundary_polygon).area
         area_km2 = area_m2 / 1e6
 
+        farm_nominal_power = len(xs) * 15.0  # Assuming each turbine is 15 MW
+
         geojson_return = {
             "type": "FeatureCollection",
             "features": [],
@@ -269,8 +271,10 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
                     "Weibull_k": data_vars["Weibull_k"]["data"],
                     "WS": data_vars["WS"]["data"],
                     "WD": data_vars["WD"]["data"],
-                    "Farm_AEP_GWh": farm_aep,
-                    "Farm_Area_km2": area_km2
+                    "Farm_AEP_Wh": farm_aep * 1e6,
+                    "Farm_Area_km2": area_km2,
+                    "WTG_Count": len(xs),
+                    "Farm_Nominal_Power_W": farm_nominal_power * 1e6
                 },
             }
         }
