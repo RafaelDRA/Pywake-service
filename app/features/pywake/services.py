@@ -161,7 +161,16 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
       return # Para a execução se o arquivo não for encontrado
 
   # Dados do site (do script original)
-  freq = np.array(point_properties.get("dp", [])) / 1000
+  # dp values are in permille (‰), sum to 1000, need to convert to fractions (0-1)
+  # BUT: Check if already normalized - if sum < 10, assume already in decimal format
+  dp_raw = np.array(point_properties.get("dp", []))
+  dp_sum = dp_raw.sum()
+  
+  if dp_sum > 10:  # Likely in permille (sum ~1000) or percentage (sum ~100)
+      freq = dp_raw / dp_sum  # Normalize to sum to 1.0
+  else:  # Already in decimal format
+      freq = dp_raw / dp_raw.sum() if dp_raw.sum() > 0 else dp_raw
+  
   c = point_properties.get("c_s")
   k = point_properties.get("k_s")
   wd = np.linspace(0, 360, len(freq), endpoint=False)
@@ -271,7 +280,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
                     "Weibull_k": data_vars["Weibull_k"]["data"],
                     "WS": data_vars["WS"]["data"],
                     "WD": data_vars["WD"]["data"],
-                    "Farm_AEP_Wh": farm_aep * 1e6,
+                    "Farm_AEP_Wh": farm_aep * 1e9,  # PyWake .aep() returns GWh, convert to Wh
                     "Farm_Area_km2": area_km2,
                     "WTG_Count": len(xs),
                     "Farm_Nominal_Power_W": farm_nominal_power * 1e6
