@@ -270,6 +270,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
         farm_nominal_power = len(xs) * 15.0  # Assuming each turbine is 15 MW
 
+        farm_id = f"farm-{polygon.id if hasattr(polygon, 'id') else 'N/A'}"
         geojson_return = {
             "type": "FeatureCollection",
             "features": [],
@@ -285,10 +286,9 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
                     "WTG_Count": len(xs),
                     "Farm_Nominal_Power_W": farm_nominal_power * 1e6
                 },
-            }
+            },
+            "id": farm_id
         }
-        print(polygon)
-        print(polygon.properties)
 
         for i in range(len(xs)):
             feature = {
