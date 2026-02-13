@@ -148,6 +148,55 @@ async def filter_grid_by_boundary(pontos_candidatos, boundary_path):
     y_layout = pontos_finais[:, 1]
     return x_layout, y_layout
 
+
+def _as_sector_array(value, n_sectors, fallback):
+    arr = np.asarray(value if value is not None else [], dtype=float).reshape(-1)
+    if arr.size == 0:
+        return np.full(n_sectors, fallback, dtype=float)
+    if arr.size == 1:
+        return np.full(n_sectors, float(arr[0]), dtype=float)
+    if arr.size != n_sectors:
+        src = np.linspace(0.0, 1.0, arr.size)
+        dst = np.linspace(0.0, 1.0, n_sectors)
+        arr = np.interp(dst, src, arr)
+    return arr
+
+
+def _extract_scalar(data, idx, default=0.0):
+    arr = np.asarray(data)
+    if arr.size == 0:
+        return float(default)
+    if arr.ndim == 0:
+        return float(arr)
+    try:
+        selector = (idx,) + (0,) * (arr.ndim - 1)
+        return float(arr[selector])
+    except Exception:
+        flat = arr.reshape(-1)
+        safe_idx = min(idx, flat.size - 1)
+        return float(flat[safe_idx])
+
+
+_POWER_CURVE_CACHE = None
+
+
+def _get_power_curve():
+    global _POWER_CURVE_CACHE
+    if _POWER_CURVE_CACHE is not None:
+        return _POWER_CURVE_CACHE
+
+    df = pd.read_csv("./data/IEA_Reference_15MW_240.csv")
+    ws_curve = df['Wind Speed [m/s]'].to_numpy(dtype=float)
+    power_curve_w = df['Power [kW]'].to_numpy(dtype=float) * 1e3
+    _POWER_CURVE_CACHE = (ws_curve, power_curve_w)
+    return _POWER_CURVE_CACHE
+
+
+def _estimate_no_wake_power_w(ws_value):
+    ws_curve, power_curve_w = _get_power_curve()
+    ws_safe = max(float(ws_value), 0.0)
+    return float(np.interp(ws_safe, ws_curve, power_curve_w, left=0.0, right=power_curve_w[-1]))
+
 # ==========================================================
 # FUNÇÕES DE SIMULAÇÃO E PLOTAGEM
 # ==========================================================
@@ -163,18 +212,28 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
   # Dados do site (do script original)
   # dp values are in permille (‰), sum to 1000, need to convert to fractions (0-1)
   # BUT: Check if already normalized - if sum < 10, assume already in decimal format
-  dp_raw = np.array(point_properties.get("dp", []))
+  dp_raw = np.asarray(point_properties.get("dp", []), dtype=float).reshape(-1)
+  dp_raw = np.nan_to_num(dp_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+  if dp_raw.size == 0:
+      dp_raw = np.ones(12, dtype=float)
+  elif dp_raw.size == 1:
+      # Single-sector values are expanded to avoid degenerate site setup
+      dp_raw = np.full(12, max(float(dp_raw[0]), 1.0), dtype=float)
+
   dp_sum = dp_raw.sum()
   
   if dp_sum > 10:  # Likely in permille (sum ~1000) or percentage (sum ~100)
       freq = dp_raw / dp_sum  # Normalize to sum to 1.0
   else:  # Already in decimal format
       freq = dp_raw / dp_raw.sum() if dp_raw.sum() > 0 else dp_raw
-  
-  c = point_properties.get("c_s")
-  k = point_properties.get("k_s")
+  n_sectors = len(freq)
+  c = _as_sector_array(point_properties.get("c_s"), n_sectors, fallback=10.0)
+  k = _as_sector_array(point_properties.get("k_s"), n_sectors, fallback=2.0)
+  c = np.clip(np.nan_to_num(c, nan=10.0, posinf=10.0, neginf=10.0), 1e-3, None)
+  k = np.clip(np.nan_to_num(k, nan=2.0, posinf=2.0, neginf=2.0), 1e-3, None)
   wd = np.linspace(0, 360, len(freq), endpoint=False)
-  ti = [.1] * 12
+  ti = [0.1] * len(freq)
   
   # --- 2. Setup dos Modelos PyWake ---
   site, wf_model = await setup_simulation_models(freq, c, k, ti, wd, wt)
@@ -254,6 +313,40 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "aep_vs_wd_y": aep_vs_wd_gwh
         }
 
+        # Wake by direction
+        wake_direction_x = []
+        wake_intensity_pct_y = []
+        wake_accumulated_gwh_y = []
+        try:
+            ws_all = simulation_result_all.WS
+            ws_eff_all = simulation_result_all.WS_eff
+            wake_ratio = xr.where(ws_all > 0, (ws_all - ws_eff_all) / ws_all, 0.0)
+            wake_ratio = xr.where(wake_ratio > 0, wake_ratio, 0.0)
+            wake_ratio = xr.where(wake_ratio < 1.0, wake_ratio, 1.0)
+            reduce_dims = [dim for dim in wake_ratio.dims if dim != 'wd']
+            wake_by_wd_pct = wake_ratio.mean(dim=reduce_dims) * 100.0 if reduce_dims else wake_ratio * 100.0
+
+            # Align with meteorological "from" convention used in production wind rose
+            wake_direction_x_raw = wake_by_wd_pct.wd.values.tolist() if 'wd' in wake_by_wd_pct.coords else wind_direction_x
+            wake_direction_x = [float(wd) for wd in wake_direction_x_raw]
+            wake_intensity_pct_y = np.nan_to_num(wake_by_wd_pct.values, nan=0.0, posinf=0.0, neginf=0.0).tolist()
+
+            # Accumulated wake-loss proxy by direction (GWh): directional production * directional wake intensity
+            # This emphasizes total directional impact over mean per-WTG topology effects.
+            wake_ratio_decimal = np.array(wake_intensity_pct_y, dtype=float) / 100.0
+            directional_production_gwh = np.array(aep_vs_wd_gwh, dtype=float)
+            wake_accumulated_gwh_y = (directional_production_gwh * wake_ratio_decimal).tolist()
+        except Exception:
+            wake_direction_x = wind_direction_x
+            wake_intensity_pct_y = [0.0 for _ in wake_direction_x]
+            wake_accumulated_gwh_y = [0.0 for _ in wake_direction_x]
+
+        all_data_area_stats.update({
+            "wake_direction_x": wake_direction_x,
+            "wake_intensity_pct_y": wake_intensity_pct_y,
+            "wake_accumulated_gwh_y": wake_accumulated_gwh_y
+        })
+
         farm_aep = simulation_result_all.aep().sum().item()
 
         simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10))
@@ -312,18 +405,36 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             "id": farm_id
         }
 
+        wake_total_loss_w = 0.0
+        wake_total_no_wake_power_w = 0.0
+
         for i in range(len(xs)):
+            ws_local = _extract_scalar(data_vars.get("WS", {}).get("data", []), i, default=0.0)
+            ws_eff_local = _extract_scalar(data_vars.get("WS_eff", {}).get("data", []), i, default=0.0)
+            power_raw = _extract_scalar(data_vars.get("Power", {}).get("data", []), i, default=0.0)
+            power_w = max(0.0, power_raw if power_raw > 1e6 else power_raw * 1e3)
+            no_wake_power_w = _estimate_no_wake_power_w(ws_local)
+            wake_loss_w = max(0.0, no_wake_power_w - power_w)
+            wake_loss_pct = (wake_loss_w / no_wake_power_w) * 100.0 if no_wake_power_w > 0 else 0.0
+
+            wake_total_loss_w += wake_loss_w
+            wake_total_no_wake_power_w += no_wake_power_w
+
             feature = {
                 "type": "Feature",
                 "properties": {
                     "wt": i + 1,
                     "Aerogerador": "IEA_Reference_15MW_240",
                     "Pot": 15.0,
-                    "WS_eff": float(data_vars["WS_eff"]["data"][i][0][0]),
-                    "TI_eff": float(data_vars["TI_eff"]["data"][i][0][0]),
-                    "Power": float(data_vars["Power"]["data"][i][0][0]),
-                    "CT": float(data_vars["CT"]["data"][i][0][0]),
-                    "h": float(data_vars["h"]["data"][i]),
+                    "WS": ws_local,
+                    "WS_eff": ws_eff_local,
+                    "TI_eff": _extract_scalar(data_vars.get("TI_eff", {}).get("data", []), i, default=0.0),
+                    "Power": power_w,
+                    "CT": _extract_scalar(data_vars.get("CT", {}).get("data", []), i, default=0.0),
+                    "h": _extract_scalar(data_vars.get("h", {}).get("data", []), i, default=150.0),
+                    "wake_loss_w": round(wake_loss_w, 2),
+                    "wake_loss_pct": round(wake_loss_pct, 3),
+                    "no_wake_power_w": round(no_wake_power_w, 2),
                     "type": "WTG"
                 },
                 "geometry": {
@@ -333,6 +444,12 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             }
 
             geojson_return["features"].append(feature)
+
+        wake_total_loss_pct = (wake_total_loss_w / wake_total_no_wake_power_w) * 100.0 if wake_total_no_wake_power_w > 0 else 0.0
+        prod_stats.update({
+            "wake_total_loss_w": round(wake_total_loss_w, 2),
+            "wake_total_loss_pct": round(wake_total_loss_pct, 3)
+        })
 
         geojson_return["features"].append({
             "type": "Feature",
