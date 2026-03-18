@@ -201,7 +201,7 @@ def _estimate_no_wake_power_w(ws_value):
 # FUNÇÕES DE SIMULAÇÃO E PLOTAGEM
 # ==========================================================
 
-async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed: float, all_data=False):
+async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_speed: float, all_data=False, sim_params=None):
   # --- 1. Configurações Iniciais ---
   
   # Carregar dados da turbina
@@ -247,9 +247,11 @@ async def run_simulation(polygon: GeoJSONQuery, point_properties: dict, wind_spe
 
   # --- 4. Geração do Layout ---
   rotor_diameter = wt.diameter()
-  spacing_downwind = 15 * rotor_diameter
-  spacing_crosswind = 3 * rotor_diameter
-  stagger_offset = 1.5 * rotor_diameter
+  downwind_d = sim_params.spacing_downwind_d if sim_params else 15.0
+  crosswind_d = sim_params.spacing_crosswind_d if sim_params else 3.0
+  spacing_downwind = downwind_d * rotor_diameter
+  spacing_crosswind = crosswind_d * rotor_diameter
+  stagger_offset = (crosswind_d / 2.0) * rotor_diameter
   
   # Define a direção do vento (METEOROLÓGICO)
   wind_direction_met = wd[np.argmax(freq)] # Para usar o predominante automático
@@ -288,7 +290,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
             )
 
         # Run simulation for all conditions (AEP)
-        simulation_result_all = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True)
+        simulation_result_all = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), all_data=True, sim_params=polygon.sim_params)
         
         if simulation_result_all is None:
             raise HTTPException(
@@ -349,7 +351,7 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
         farm_aep = simulation_result_all.aep().sum().item()
 
-        simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10))
+        simulation_result_one_d = await run_simulation(polygon=polygon, point_properties=point_properties, wind_speed=point_properties.get("mys", 10), sim_params=polygon.sim_params)
     
         if simulation_result_one_d is None:
              raise HTTPException(
@@ -395,12 +397,17 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
         }
 
         farm_id = f"farm-{polygon.id if hasattr(polygon, 'id') else 'N/A'}"
+        sim_params_dict = {
+            "spacing_downwind_d": polygon.sim_params.spacing_downwind_d if polygon.sim_params else 15.0,
+            "spacing_crosswind_d": polygon.sim_params.spacing_crosswind_d if polygon.sim_params else 3.0,
+        }
         geojson_return = {
             "type": "FeatureCollection",
             "features": [],
             "properties": {
                 "LAYER_NAME": polygon.properties.get("LAYER_NAME", "N/A") if polygon.properties else polygon.properties.get("Empreendimento", "N/A"),
-                "prod_stats": prod_stats
+                "prod_stats": prod_stats,
+                "sim_params": sim_params_dict
             },
             "id": farm_id
         }
