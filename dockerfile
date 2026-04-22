@@ -9,7 +9,7 @@ WORKDIR /app
 # Instala dependências de compilação
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    libpq-dev \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia requirements e gera wheels
@@ -21,21 +21,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instala dependências mínimas necessárias para rodar (psycopg2 precisa de libpq)
+# Instala dependências mínimas necessárias para rodar
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia wheels e instala
 COPY --from=builder /wheels /wheels
 COPY --from=builder /app/requirements.txt .
-RUN pip install --no-cache /wheels/*
+RUN pip install --no-cache-dir /wheels/*
 
 # Copia a aplicação
 COPY . .
 
 # Expõe a porta
-EXPOSE 5000
+EXPOSE 5001
 
 # Comando para rodar com uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5001"]
