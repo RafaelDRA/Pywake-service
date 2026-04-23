@@ -23,6 +23,7 @@ WORKDIR /app
 
 # Instala dependências mínimas necessárias para rodar
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libexpat1 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
