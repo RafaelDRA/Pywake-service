@@ -479,7 +479,8 @@ async def generate_geojson(geojson_name: str, polygon: GeoJSONQuery):
 
 
 async def get_point_from_service(geojson_name, polygon):
-    url = f"{settings.MAIN_SERVICE}geojsons/query/centroid/{geojson_name}"
+    base_url = settings.MAIN_SERVICE.rstrip("/")
+    url = f"{base_url}/geojsons/query/centroid/{geojson_name}"
 
     try:
         async with httpx.AsyncClient() as client:
