@@ -5,7 +5,6 @@ import pandas as pd
 import json
 import base64
 import binascii
-import matplotlib.pyplot as plt
 from matplotlib.path import Path
 from pyproj import Transformer
 from py_wake.site import XRSite
