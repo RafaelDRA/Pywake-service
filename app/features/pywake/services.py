@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
 
+from app.core.request_context import build_internal_request_headers
 from app.core.settings import settings
 from app.features.pywake.schemas import GeoJSONQuery
 
@@ -483,7 +484,11 @@ async def get_point_from_service(geojson_name, polygon):
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=polygon.model_dump())
+            response = await client.post(
+                url,
+                json=polygon.model_dump(),
+                headers=build_internal_request_headers(),
+            )
             response.raise_for_status()
             
             data = response.json()
