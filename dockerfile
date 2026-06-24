@@ -39,4 +39,4 @@ COPY . .
 EXPOSE 5001
 
 # Comando para rodar com uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 5001 --workers ${UVICORN_WORKERS:-2}"]
