@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.settings import settings
 from app.core.request_context import RequestContextMiddleware
 from app.features.pywake.routes import router as pywake_router
 from fastapi.openapi.utils import get_openapi
@@ -7,7 +8,8 @@ from app.security.encryption_middleware import EncryptionMiddleware
 
 app = FastAPI()
 
-app.add_middleware(EncryptionMiddleware)
+if settings.ENABLE_ENCRYPTION:
+    app.add_middleware(EncryptionMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(
