@@ -21,6 +21,9 @@ async def emit_request_audit_event(
     error_code: str | None = None,
     error_message_redacted: str | None = None,
 ) -> None:
+    if not settings.MAIN_SERVICE or not settings.AUDIT_INTERNAL_SECRET:
+        return
+
     request_context = getattr(request.state, "request_context", None)
     payload = {
         "request_id": getattr(request.state, "request_id", None),
