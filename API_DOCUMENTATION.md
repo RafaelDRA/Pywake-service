@@ -1,5 +1,7 @@
 # PyWake Service - API Documentation
 
+> Documento histórico: não representa necessariamente o estado atual. Consulte `../../docs/api-contracts.md` e `../../docs/simulation-tools.md`. O router atual deve prevalecer sobre os exemplos abaixo.
+
 ## Overview
 This API service provides wind farm simulation capabilities using PyWake library. It accepts GeoJSON polygon boundaries and returns wind turbine placement and energy production calculations.
 
